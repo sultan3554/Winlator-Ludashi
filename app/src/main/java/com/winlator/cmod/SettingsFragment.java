@@ -58,6 +58,7 @@ import com.winlator.cmod.inputcontrols.ControlElement;
 import com.winlator.cmod.inputcontrols.ExternalController;
 import com.winlator.cmod.inputcontrols.PreferenceKeys;
 import com.winlator.cmod.midi.MidiManager;
+import com.winlator.cmod.restore.RestoreActivity;
 import com.winlator.cmod.widget.InputControlsView;
 import com.winlator.cmod.xenvironment.ImageFsInstaller;
 
@@ -87,7 +88,8 @@ public class SettingsFragment extends Fragment {
 	private CheckBox cbCursorLock;
     // Disable or enable Xinput Processing
     private CheckBox cbXinputToggle;
-
+	
+    private boolean isRestoreAction = false;
     private CheckBox cbEnableBigPictureMode;
     private CheckBox cbEnableCustomApiKey;
     private EditText etCustomApiKey;
@@ -306,6 +308,18 @@ public class SettingsFragment extends Fragment {
 
         view.findViewById(R.id.BTReInstallImagefs).setOnClickListener(v -> {
             ContentDialog.confirm(context, R.string.do_you_want_to_reinstall_imagefs, () -> ImageFsInstaller.installFromAssets((MainActivity) getActivity()));
+        });
+
+		// Add backup button
+        Button btnBackupData = view.findViewById(R.id.BTBackupData);
+        btnBackupData.setOnClickListener(v -> {
+            showBackupConfirmationDialog();
+        });
+
+        // Add restore button
+        Button btnRestoreData = view.findViewById(R.id.BTRestoreData);
+        btnRestoreData.setOnClickListener(v -> {
+            selectBackupFileForRestore();
         });
 
         view.findViewById(R.id.BTConfirm).setOnClickListener((v) -> {
@@ -664,6 +678,53 @@ public class SettingsFragment extends Fragment {
         editor.remove("current_fexcore_version");
         editor.apply();
     }
+	private void showBackupConfirmationDialog() {
+        new AlertDialog.Builder(getContext())
+                .setTitle("Backup Data")
+                .setMessage("Do you want to create a backup of the app's data directory?")
+                .setPositiveButton("Yes", (dialog, which) -> backupAppData())
+                .setNegativeButton("No", null)
+                .show();
+    }
+
+    private void backupAppData() {
+        File dataDir = getContext().getFilesDir().getParentFile(); // App's data directory
+        File backupFile = new File(Environment.getExternalStorageDirectory(), "app_data_backup.tar");
+
+        preloaderDialog.showOnUiThread(R.string.backing_up_data);
+
+        int availableProcessors = Runtime.getRuntime().availableProcessors();
+        ExecutorService compressionExecutor = Executors.newFixedThreadPool(availableProcessors);
+
+        compressionExecutor.execute(() -> {
+            try {
+                TarCompressorUtils.archive(new File[]{dataDir}, backupFile, file -> {
+                    // Exclude the problematic directory
+                    String excludePath = "imagefs/tmp/.sysvshm";
+                    return !file.getAbsolutePath().contains(excludePath);
+                });
+                getActivity().runOnUiThread(() -> {
+                    preloaderDialog.closeOnUiThread();
+                    AppUtils.showToast(getContext(), "Backup completed: " + backupFile.getPath());
+                });
+            } catch (Exception e) {
+                getActivity().runOnUiThread(() -> {
+                    preloaderDialog.closeOnUiThread();
+                    AppUtils.showToast(getContext(), "Backup failed.");
+                });
+            }
+        });
+    }
+
+
+
+    private void selectBackupFileForRestore() {
+        isRestoreAction = true; // Set the flag to indicate a restore operation
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("*/*");
+        startActivityForResult(intent, MainActivity.OPEN_FILE_REQUEST_CODE);
+	}
 
     @Override
     public void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
@@ -677,6 +738,14 @@ public class SettingsFragment extends Fragment {
                 SharedPreferences.Editor editor = preferences.edit();
 
                 switch (requestCode) {
+
+						// Case for File Picker to restore data
+                    case MainActivity.OPEN_FILE_REQUEST_CODE:
+                        if (isRestoreAction) {
+                            restoreAppData(uri);
+                            isRestoreAction = false;  // Reset the flag
+                        }
+                        break;
 
                     case REQUEST_CODE_WINLATOR_PATH:
                         // Save the selected URI as a string in SharedPreferences
@@ -765,6 +834,15 @@ public class SettingsFragment extends Fragment {
         }
     }
 
+	private void restoreAppData(Uri backupUri) {
+        if (getActivity() != null) {  // Ensure the activity is not null
+            Intent intent = new Intent(getActivity(), RestoreActivity.class);
+            intent.setData(backupUri);
+            startActivity(intent);
+            getActivity().finish(); // Close the main activity
+        }
+	}
+
     private void moveFiles(File sourceDir, File targetDir) throws IOException {
         File[] files = sourceDir.listFiles();
         if (files != null) {
@@ -785,4 +863,18 @@ public class SettingsFragment extends Fragment {
         // Clear the temporary directory after moving
         FileUtils.clear(sourceDir);
     }
+	private void onRestoreSuccess() {
+        getActivity().runOnUiThread(() -> {
+            preloaderDialog.closeOnUiThread();
+            AppUtils.showToast(getContext(), "Data restored successfully.");
+            AppUtils.restartApplication(getActivity());  // Restart the app to apply changes
+        });
+    }
+
+    private void onRestoreFailed() {
+        getActivity().runOnUiThread(() -> {
+            preloaderDialog.closeOnUiThread();
+            AppUtils.showToast(getContext(), "Data restore failed.");
+        });
+	}
 }
